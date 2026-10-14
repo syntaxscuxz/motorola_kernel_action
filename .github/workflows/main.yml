@@ -36,7 +36,7 @@ jobs:
         USE_OUT_DIR=1
         export KBUILD_BUILD_USER="@syntaxscuxz"
 
-        KERNEL_ROOT="${HOME}/kernel"
+        KERNEL_ROOT="${GITHUB_WORKSPACE}"
         CLANG="${HOME}/toolchains/clang-r510928"
         cd "${KERNEL_ROOT}"
 
