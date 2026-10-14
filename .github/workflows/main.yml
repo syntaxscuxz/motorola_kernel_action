@@ -20,16 +20,6 @@ jobs:
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
 
-    - name: Download kernel source
-      env:
-        KERNEL_REPO: ${{ inputs.KERNEL_REPO }}
-        KERNEL_BRANCH: ${{ inputs.KERNEL_BRANCH }}
-      run: |
-        mkdir -p "$HOME/kernel"
-        curl -Lf "https://github.com/${KERNEL_REPO}/archive/refs/heads/${KERNEL_BRANCH}.tar.gz" \
-          | tar -xz -C "$HOME/kernel" --strip-components=1
-        cd "$HOME/kernel" && git init -q
-
     - name: Cache clang toolchain
       uses: actions/cache@v4
       with:
