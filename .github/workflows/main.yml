@@ -1,0 +1,121 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      KERNEL_REPO:
+        description: 'Kernel repositor'
+        default: 'MotorolaMobilityLLC/kernel-msm'
+        required: true
+      KERNEL_BRANCH:
+        description: 'Kernel branch to build'
+        default: 'MMI-A171WAAH.31-9-4'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+
+    - name: Download kernel source
+      env:
+        KERNEL_REPO: ${{ inputs.KERNEL_REPO }}
+        KERNEL_BRANCH: ${{ inputs.KERNEL_BRANCH }}
+      run: |
+        mkdir -p "$HOME/kernel"
+        curl -Lf "https://github.com/${KERNEL_REPO}/archive/refs/heads/${KERNEL_BRANCH}.tar.gz" \
+          | tar -xz -C "$HOME/kernel" --strip-components=1
+        cd "$HOME/kernel" && git init -q
+
+    - name: Cache clang toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/toolchains/clang-r510928
+        key: clang-r510928
+
+    - name: Build kernel
+      id: buildKernel
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        KERNEL_IMAGE="Image"
+        USE_OUT_DIR=1
+        export KBUILD_BUILD_USER="@syntaxscuxz"
+
+        KERNEL_ROOT="${HOME}/kernel"
+        CLANG="${HOME}/toolchains/clang-r510928"
+        cd "${KERNEL_ROOT}"
+
+        info(){ echo -e "\n[INFO]: $*\n"; }
+        die(){ echo -e "\n[ERROR]: $*\n" >&2; exit 1; }
+
+        fetch(){
+            [ -d "$1" ] && return 0
+            info "Downloading $(basename "$1")..."
+            mkdir -p "$1"
+            local z=z; case "$2" in *.xz) z=J;; esac
+            curl -Lf --progress-bar "$2" | tar -x"$z" -C "$1" --strip-components="${3:-0}" \
+                || { rm -rf "$1"; die "Failed to download $2"; }
+        }
+
+        DEB_PKGS=(build-essential bc bison flex pkg-config git curl tar xz-utils zip unzip cpio rsync
+                  kmod perl python3 python-is-python3 libssl-dev libelf-dev pahole libncurses-dev
+                  zlib1g-dev libyaml-dev lz4 zstd device-tree-compiler)
+
+        install_deps(){
+            local missing=() available=() p
+            for p in "${DEB_PKGS[@]}"; do
+                [ "$(dpkg-query -W -f='${db:Status-Status}' "$p" 2>/dev/null)" = installed ] || missing+=("$p")
+            done
+            [ "${#missing[@]}" = 0 ] && return 0
+            for p in "${missing[@]}"; do apt-cache show "$p" &>/dev/null && available+=("$p"); done
+            [ "${#available[@]}" = 0 ] && return 0
+            info "Installing: ${available[*]}"
+            sudo apt update && sudo apt install -y "${available[@]}" || die "apt failed"
+        }
+
+        [ -f Makefile ] && [ -d arch/arm64 ] || die "Kernel source not found."
+        install_deps
+        [ -f .gitmodules ] && git submodule update --init --recursive
+
+        fetch "${CLANG}" "https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r510928.tar.gz"
+        export PATH="${CLANG}/bin:${PATH}"
+        export LD_LIBRARY_PATH="${CLANG}/lib:${CLANG}/lib64:${LD_LIBRARY_PATH:-}"
+
+        BUILD_OPTIONS=(
+            -j"$(nproc)"
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            HOSTCC=gcc
+            HOSTCXX=g++
+        )
+
+        if [ "${USE_OUT_DIR}" = 1 ]; then
+            BUILD_OPTIONS+=(O="${KERNEL_ROOT}/out")
+            BOOT_DIR="${KERNEL_ROOT}/out/arch/arm64/boot"
+        else
+            BOOT_DIR="${KERNEL_ROOT}/arch/arm64/boot"
+        fi
+
+        make "${BUILD_OPTIONS[@]}" gki_defconfig vendor/parrot_perf.config vendor/parrot_consolidate.config vendor/ext_config/moto-parrot-mumba.config vendor/ext_config/moto-parrot.config
+
+        make "${BUILD_OPTIONS[@]}" "${KERNEL_IMAGE}" || die "Build failed"
+
+        mkdir -p "${KERNEL_ROOT}/build"
+        cp "${BOOT_DIR}/${KERNEL_IMAGE}" "${KERNEL_ROOT}/build/"
+        info "Done -> build/${KERNEL_IMAGE}"
+
+        DETAILS="mumba-$(date -u +'%Y%m%d%H%M')"
+        echo "buildDetails=${DETAILS}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload Image
+      uses: actions/upload-artifact@v4
+      with:
+        name: Image-${{ steps.buildKernel.outputs.buildDetails }}
+        path: /home/runner/kernel/build/Image
+        if-no-files-found: error
